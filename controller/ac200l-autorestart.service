@@ -1,0 +1,18 @@
+[Unit]
+Description=AC200L auto-restart controller (re-arms AC output when grid returns)
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+# Adjust User and paths to match your install (see DEPLOY.md).
+User=pi
+WorkingDirectory=/home/pi/ac200l
+ExecStart=/home/pi/ac200l/.venv/bin/python /home/pi/ac200l/ac200l_autorestart.py --interval 60
+Restart=always
+RestartSec=10
+# Don't spin forever if something is badly broken; systemd will keep restarting but log it.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
