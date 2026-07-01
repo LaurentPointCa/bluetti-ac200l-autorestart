@@ -14,13 +14,16 @@ does **not** help: it's ignored during a real outage, so the unit still drains t
 ## The fix
 
 A tiny always-on controller watches the unit over Bluetooth LE and re-enables AC output
-whenever **grid power is present but AC output is off** — exactly the post-outage dead-latch
-state. It's the one nudge the unit won't do itself.
+whenever **it is off and it's safe to turn on** — the unit is drawing input power (grid
+confirmed) or SoC is above a floor. That's exactly the post-outage dead-latch state (grid back,
+battery charging, output stuck off). It's the one nudge the unit won't do itself.
 
 Why this works and stays robust:
 - The AC200L auto-wakes and recharges when grid returns, and is controllable again over BLE,
   so the controller can re-arm at its leisure — no racing the clock.
-- When grid is present, AC output runs from grid pass-through, so re-arming is safe at any SoC.
+- A drained battery charging hard reads nonzero input power (grid confirmed); a full battery on
+  grid draws ~0 W, so a SoC floor covers that case too. Input *power* alone would misread a full
+  battery as an outage — the SoC floor is what makes detection robust.
 - The controller is **fully self-contained over direct Bluetooth** — no cloud, no Home
   Assistant, no LAN dependency. That matters because the AC200L powers the internet gear, so
   there is no network until the unit is re-armed (rules out cloud and ESP32-BLE-proxy designs).
@@ -40,8 +43,10 @@ Each folder has its own README with build/flash/run/deploy steps.
 ## Protocol (validated on real AC200L hardware)
 
 Unencrypted Modbus over BLE GATT. Write char `0000ff02-...`, notify char `0000ff01-...`.
-- Read holding registers (func `0x03`), range 36..49: `37` ac_input_power (W, grid-present
-  proxy), `38` ac_output_power (W), `43` SoC (%), `48` ac_output_on (bool).
+- Read holding registers (func `0x03`), range 36..49: `37` ac_input_power (W — nonzero only
+  while charging/passing power, so *not* a reliable grid flag on its own), `38` ac_output_power
+  (W), `43` SoC (%), `48` ac_output_on (bool). No AC-input-voltage register in this range, so
+  re-arm safety uses ac_input_power>0 **or** a SoC floor rather than input power alone.
 - Re-arm: write single register (func `0x06`) `3007` = `1`.
 
 ## Status

@@ -2,9 +2,12 @@
  * AC200L auto-restart controller — ESP32 firmware (NimBLE-Arduino).
  *
  * Standalone, network-independent re-arm. Watches one specific Bluetti AC200L over Bluetooth
- * LE and re-enables AC output whenever grid power is present but AC output is off — the state
- * the unit latches into after a full-drain outage. The unit auto-wakes and recharges itself
- * when grid returns; this provides the one nudge it won't do on its own: turning AC output on.
+ * LE and re-enables AC output whenever it is off and it's safe to do so — the state the unit
+ * latches into after a full-drain outage. "Safe" = the unit is drawing input power (grid
+ * confirmed, e.g. charging right after grid returns) OR SoC is above REARM_SOC_FLOOR (a
+ * full/healthy battery draws ~0 W from a connected grid, so zero input power is NOT an outage).
+ * The unit auto-wakes and recharges itself when grid returns; this provides the one nudge it
+ * won't do on its own: turning AC output on.
  *
  * Target device (REQUIRED, security)
  * ----------------------------------
@@ -102,6 +105,12 @@ static const uint32_t RESP_TIMEOUT_MS = 5000;
 static const uint16_t READ_START = 36;
 static const uint16_t READ_COUNT = 14;             // regs 36..49
 static const uint16_t AC_OUTPUT_CTRL_REG = 3007;
+
+// Re-arm when output is off and EITHER input power is flowing (grid confirmed) OR SoC is at/above
+// this floor. The floor covers the case where grid is present but the unit draws ~0 W (full
+// battery, nothing to charge), which would otherwise look like an outage. The acIn>0 term still
+// covers the low-SoC dead-latch (drained battery charging hard right after grid returns).
+static const uint16_t REARM_SOC_FLOOR = 15;   // percent
 
 // Safety back-off: if a re-arm doesn't "stick" repeatedly, stop hammering and warn.
 static const int      MAX_FAILED_REARMS = 5;
@@ -371,9 +380,14 @@ static void bleCheckAndRearm() {
   State s;
   if (!readState(s)) { Serial.println("read failed"); oledStatus("BLE read failed"); g_client->disconnect(); return; }
 
-  bool grid = s.acIn > 0;
+  // "Safe to re-arm" = output is off AND either the unit is drawing input power (grid confirmed,
+  // e.g. the post-drain dead-latch while charging) OR SoC is above a floor (battery full/healthy,
+  // so re-arming is safe even when input power reads 0 — a full battery with grid connected draws
+  // ~0 W, which is NOT an outage). Using input *power* alone as the grid proxy misfires here.
+  bool charging = s.acIn > 0;
+  bool safeToArm = charging || (s.soc >= REARM_SOC_FLOOR);
   Serial.printf("SoC %u%% | AC-in %uW (%s) | AC-out %uW (%s)\n",
-                s.soc, s.acIn, grid ? "grid" : "OUTAGE",
+                s.soc, s.acIn, charging ? "charging" : "idle-in",
                 s.acOutW, s.acOutputOn ? "on" : "OFF");
 
   // Push fresh telemetry to the panel (status line set per-branch below).
@@ -381,7 +395,7 @@ static void bleCheckAndRearm() {
   g_dSoc = s.soc; g_dAcIn = s.acIn; g_dAcOutW = s.acOutW; g_dAcOn = s.acOutputOn;
 
   uint32_t now = millis();
-  bool need = grid && !s.acOutputOn;
+  bool need = !s.acOutputOn && safeToArm;
 
   if (need && (int32_t)(g_graceUntil - now) > 0) {
     Serial.println("re-arm condition met but within grace/back-off; waiting");
@@ -393,7 +407,8 @@ static void bleCheckAndRearm() {
     g_failedRearms = 0;
     oledStatus("BACK-OFF (failing)");
   } else if (need) {
-    Serial.println("grid present + AC output OFF -> re-arming AC output");
+    Serial.printf("AC output OFF + safe (%s) -> re-arming AC output\n",
+                  charging ? "grid charging" : "SoC above floor");
     g_triggered = true;                 // latch: the controller had to intervene (until reset)
     oledStatus("RE-ARMING...");
     if (setAcOutput(true)) {
@@ -415,9 +430,12 @@ static void bleCheckAndRearm() {
       Serial.printf("re-arm write failed (attempt %d)\n", g_failedRearms);
       oledStatus("re-arm wr failed");
     }
-  } else if (!grid) {
-    oledStatus("OUTAGE (no grid)");
-  } else {  // grid && s.acOutputOn
+  } else if (!s.acOutputOn) {
+    // Output off but not safe to arm: no input power and SoC below the floor (a genuine
+    // low-battery outage). Wait for grid to return / the unit to start charging.
+    Serial.println("AC output OFF but SoC below floor and no grid -> waiting");
+    oledStatus("LOW SoC - waiting");
+  } else {  // output on
     g_failedRearms = 0;  // healthy
     oledStatus("OK - Armed");
   }

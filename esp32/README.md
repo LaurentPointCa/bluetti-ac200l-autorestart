@@ -1,7 +1,8 @@
 # AC200L auto-restart controller — ESP32 firmware
 
-Standalone NimBLE firmware that re-enables the AC200L's AC output whenever grid power is
-present but output is off (the state it latches into after a full-drain outage). No network,
+Standalone NimBLE firmware that re-enables the AC200L's AC output whenever it is off and it's
+safe to do so — the unit is charging (grid confirmed) or SoC is above a floor (the state it
+latches into after a full-drain outage). No network,
 no Home Assistant, no cloud — it talks Bluetooth directly to the unit and does everything
 on-device. This is the appliance version of the Python controller; same proven protocol.
 
@@ -53,12 +54,12 @@ First set `TARGET_DEVICE_ID` in `src/config.h` (see Configuration below). With t
 phone app closed** (the unit allows only one BLE connection), watch the serial monitor. Each
 BLE check (every 45s while the SSID is absent, or every 2 min while it's seen) you should see:
 ```
-SoC 87% | AC-in 142W (grid) | AC-out 118W (on)
+SoC 87% | AC-in 142W (charging) | AC-out 118W (on)
 ```
 To verify the re-arm: turn AC output off (phone app, or the Mac write PoC), and within a poll
 the log should show:
 ```
-grid present + AC output OFF -> re-arming AC output
+AC output OFF + safe (SoC above floor) -> re-arming AC output
 re-arm SUCCESS (AC output now ON)
 ```
 That exactly reproduces the post-outage recovery. For a faster test loop, temporarily lower
@@ -73,8 +74,9 @@ used as an attention strip.
 
 **Yellow attention strip (top):** the current status, as yellow-on-black:
 - `Scanning...` / `Unit not found` — looking for the target unit over BLE.
-- `OK - Armed` — grid present, AC output on (healthy).
-- `OUTAGE (no grid)` — no grid input seen (unit on battery).
+- `OK - Armed` — AC output on (healthy).
+- `LOW SoC - waiting` — output off, no input power, and SoC below the floor: a genuine
+  low-battery outage; it waits for grid/charging rather than draining a near-dead pack.
 - `RE-ARMING...` → `RE-ARMED` — the recovery nudge in progress / succeeded.
 - `WAITING (grace)` / `BACK-OFF (failing)` — post-success grace or repeated-failure back-off.
 - `WiFi OK - router up` — SSID beacon seen ⇒ router powered ⇒ all good (idle 2 min).

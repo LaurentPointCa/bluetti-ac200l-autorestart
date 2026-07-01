@@ -127,6 +127,16 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+16. [DONE + VERIFIED ON HARDWARE 2026-07-01] FIXED grid-detection bug found during a live re-arm
+    test. `grid = ac_input_power(reg37) > 0` misfires: a full battery on grid with output off
+    draws ~0 W, so the firmware wrongly saw "OUTAGE" and refused to re-arm. Reg dump of 36-49
+    confirmed NO ac_input_voltage in that range (only 43=SoC + unidentified flags 41=11/45=1/47=1,
+    not trusted). Fix: re-arm when output off AND (acIn>0 [grid charging, covers low-SoC dead-latch]
+    OR SoC>=REARM_SOC_FLOOR=15% [full/healthy battery, covers the acIn=0 case]). New "LOW SoC -
+    waiting" state when output off + low SoC + no grid. VERIFIED end-to-end on hardware: flipped
+    AC output off (battery 100%), firmware read it, re-armed (reg 3007=1), read-back confirmed
+    output ON. Full recovery path incl. TRIGGERED latch now proven. Docs (both READMEs) updated.
+
 15. [DONE + VERIFIED ON HARDWARE 2026-07-01] Healthy-state BLE heartbeat. Even when SSID is seen
     (router up, nothing to re-arm), do one BLE read every WIFI_HEARTBEAT_MS (15 min) + once at
     boot, to prove the link and refresh SoC/AC-in/AC-out on the OLED. Read-only (grid up => no
