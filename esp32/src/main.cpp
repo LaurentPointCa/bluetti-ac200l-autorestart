@@ -194,13 +194,23 @@ static void oledStatus(const char* s) {
   g_dStatus[sizeof(g_dStatus) - 1] = '\0';
   oledDraw();
 }
+
+// Clear the whole panel to black (used to make a refresh visibly obvious).
+static void oledBlank() {
+  if (!g_oledOk) return;
+  oled.clearDisplay();
+  oled.display();
+}
 #else
 static void oledInit() {}
 static void oledDraw() {}
 static void oledStatus(const char*) {}
+static void oledBlank() {}
 #endif
 
-// Sleep for ms while refreshing the OLED once a second, so the countdown stays live.
+// Sleep for ms while refreshing the OLED once a second, so the countdown stays live. When the
+// countdown hits zero, blank the panel for ~1s before returning so the user sees a clear screen
+// refresh on every check — even when the new readings are identical to the previous ones.
 static void sleepWithCountdown(uint32_t ms) {
   for (uint32_t r = ms / 1000; r > 0; r--) {
     g_nextCheckSecs = r;
@@ -208,7 +218,8 @@ static void sleepWithCountdown(uint32_t ms) {
     delay(1000);
   }
   g_nextCheckSecs = 0;
-  oledDraw();
+  oledBlank();
+  delay(1000);
 }
 
 // ---- BLE state -------------------------------------------------------------
