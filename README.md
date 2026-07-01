@@ -62,3 +62,21 @@ flash a board and deploy it. See `esp32/README.md`.
   cycle — no controller can fix that.
 - A future firmware that switches the AC200L to Bluetti's encrypted BLE protocol would require
   the encrypted handshake (current firmware is unencrypted).
+
+## Acknowledgments
+
+All code here (ESP32 firmware, Python daemon, PoC scripts) is original, but the underlying
+Modbus-over-BLE register map and GATT characteristics were reverse-engineered by the Bluetti
+community, not by this project. That work made this possible:
+
+- [ftrueck/bluetti_mqtt](https://github.com/ftrueck/bluetti_mqtt) and the upstream
+  [warhammerkid/bluetti_mqtt](https://github.com/warhammerkid/bluetti_mqtt) — AC200L register map
+  (`ac_output_on` at 3007, SoC, power readings) and GATT service/characteristic UUIDs.
+- [Patrick762/bluetti-bt-lib](https://github.com/Patrick762/bluetti-bt-lib) and its Home
+  Assistant integration — independent confirmation of AC200L read/write support.
+
+Thanks to their authors and contributors for documenting a protocol Bluetti never published.
+
+## License
+
+[MIT](LICENSE).
