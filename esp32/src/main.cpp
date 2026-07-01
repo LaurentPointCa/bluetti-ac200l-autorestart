@@ -19,10 +19,12 @@
  * is on and everything is fine. The firmware just SCANS for the configured WIFI_SSID beacon —
  * it never associates, so NO WiFi password is needed or stored (the SSID name isn't secret):
  *   - SSID seen     -> all good. Stay OFF Bluetooth (phone app keeps working) and idle,
- *                      re-checking every WIFI_OK_INTERVAL_MS (15 min).
- *   - SSID NOT seen -> router likely unpowered (AC output off / dead-latch). Switch on
- *                      Bluetooth, check the unit, re-arm if grid is present.
- *   - WIFI_SSID empty -> optimization off; always check over BLE every CHECK_INTERVAL_MS (5 min).
+ *                      re-checking every WIFI_OK_INTERVAL_MS (2 min).
+ *   - SSID NOT seen -> router likely unpowered (AC output off / dead-latch), and the network
+ *                      is down anyway, so poll BLE hard every CHECK_INTERVAL_MS (45 s) for a
+ *                      rapid re-arm once grid returns.
+ *   - WIFI_SSID empty -> optimization off; poll BLE gently every NO_WIFI_INTERVAL_MS (2 min) so
+ *                      it doesn't keep stealing the single BLE slot from someone using the app.
  * NimBLE is initialized once and left up; we connect/disconnect per check but never deinit
  * (deinit-every-cycle deadlocks the NimBLE host task). WiFi is only ever a brief passive scan.
  *
@@ -81,8 +83,14 @@
 #  define WIFI_SSID ""
 #endif
 
-static const uint32_t WIFI_OK_INTERVAL_MS = 15UL * 60 * 1000; // SSID seen -> idle 15 min
-static const uint32_t CHECK_INTERVAL_MS   = 5UL * 60 * 1000;  // normal BLE check cadence (5 min)
+// Cadences. BLE is only ever used when the SSID is absent, so it never fights the phone app
+// during normal (network-up) use. Two BLE speeds: fast when the SSID is *configured* but not
+// seen (a real outage/dead-latch — the network is down anyway, so poll hard for a rapid re-arm),
+// and gentle when no SSID is configured at all (there we poll continuously and would otherwise
+// keep stealing the BLE slot from a user, so back off).
+static const uint32_t WIFI_OK_INTERVAL_MS = 2UL * 60 * 1000;  // SSID seen -> idle 2 min (no BLE)
+static const uint32_t CHECK_INTERVAL_MS   = 45UL * 1000;      // SSID configured but absent -> 45s
+static const uint32_t NO_WIFI_INTERVAL_MS = 2UL * 60 * 1000;  // no SSID configured -> gentle 2 min
 static const uint32_t SCAN_SECONDS    = 6;
 static const uint32_t RESP_TIMEOUT_MS = 5000;
 
@@ -445,9 +453,9 @@ void setup() {
   else
     Serial.printf("Target device: %s\n", TARGET_DEVICE_ID);
   if (strlen(WIFI_SSID) == 0)
-    Serial.println("No WIFI_SSID set -> always check over BLE (every 5 min).");
+    Serial.println("No WIFI_SSID set -> always check over BLE (every 2 min).");
   else
-    Serial.printf("WiFi beacon optimization on for SSID '%s' (idle 15 min when seen).\n", WIFI_SSID);
+    Serial.printf("WiFi beacon optimization on for SSID '%s' (idle 2 min seen; 45s BLE when down).\n", WIFI_SSID);
   oledInit();
   g_respSem = xSemaphoreCreateBinary();
   // Initialize NimBLE once and leave it up for the life of the program. We connect/disconnect
@@ -461,13 +469,13 @@ void loop() {
   if (strlen(TARGET_DEVICE_ID) == 0) {
     Serial.println("No target device ID configured; not re-arming.");
     oledStatus("No device ID set");
-    sleepWithCountdown(CHECK_INTERVAL_MS);
+    sleepWithCountdown(NO_WIFI_INTERVAL_MS);
     return;
   }
 
   // WiFi beacon shortcut: SSID on the air => router up => everything fine, skip the re-arm.
   if (ssidBeaconPresent()) {
-    Serial.println("SSID present -> router powered / AC output on. Idle 15 min (no re-arm).");
+    Serial.println("SSID present -> router powered / AC output on. Idle 2 min (no re-arm).");
     oledStatus("WiFi OK - router up");
     sleepWithCountdown(WIFI_OK_INTERVAL_MS);
     return;
@@ -478,5 +486,7 @@ void loop() {
   oledStatus("Checking BLE...");
   bleCheckAndRearm();
 
-  sleepWithCountdown(CHECK_INTERVAL_MS);
+  // Fast poll during a real outage (SSID configured but down); gentle when no SSID is set at all
+  // so we don't keep stealing the BLE slot from someone using the phone app.
+  sleepWithCountdown(strlen(WIFI_SSID) == 0 ? NO_WIFI_INTERVAL_MS : CHECK_INTERVAL_MS);
 }
