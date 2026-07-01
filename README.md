@@ -2,6 +2,8 @@
 
 Make a Bluetti **AC200L** used as a UPS recover on its own after a power outage drains it.
 
+![The controller running on an ideaspark ESP32-WROOM-32. The OLED shows the healthy state: "WiFi OK - router up" (SSID seen, so it stays off Bluetooth), SoC 100%, AC in/out (IN:185W OUT:ON), the WiFi indicator, a countdown to the next check, and the target device ID.](esp32-oled.jpeg)
+
 ## The problem
 
 In UPS mode, if grid power fails and the outage lasts long enough to drain the AC200L to 0%,
