@@ -5,12 +5,17 @@
 
 # Python
 .venv/
+.venv-pio/
 __pycache__/
 *.pyc
 
 # Editors / OS
 .vscode/
 .DS_Store
+
+# Secrets — real WiFi credentials (keep secrets.h.example, ignore the filled-in copy)
+secrets.h
+esp32/src/secrets.h
 
 # Claude Code local settings
 .claude/

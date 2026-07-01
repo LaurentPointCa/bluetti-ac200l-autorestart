@@ -22,6 +22,13 @@
  * Power this board from a GRID wall outlet (USB), NOT from the AC200L, and place it within
  * Bluetooth (and WiFi) range of the unit.
  *
+ * OLED status (optional)
+ * ----------------------
+ * If an SSD1306 128x64 panel is present (onboard on the ideaspark ESP32-WROOM-32, I2C @ 0x3C,
+ * SDA=21/SCL=22) it shows live SoC, AC-in W, AC-out on/off, and a state line (Scanning /
+ * WAITING / RE-ARMING / RE-ARMED / OK / OUTAGE / WiFi OK). It is purely informational: if no
+ * panel is found the firmware runs headless and the re-arm logic is unaffected.
+ *
  * Protocol (proven on real AC200L hardware): Write char 0000ff02-..., Notify char 0000ff01-...
  * (service searched, not hardcoded). Modbus over GATT. Read range 36..49 (func 0x03):
  * 37 ac_input_power(W), 38 ac_output_power(W), 43 SoC(%), 48 ac_output_on(bool).
@@ -31,12 +38,24 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <NimBLEDevice.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // ---- Config ----------------------------------------------------------------
-// WiFi: set these to your home network. Leave WIFI_SSID = "" to disable the WiFi
-// optimization and poll over BLE continuously instead.
-static const char* WIFI_SSID = "";
-static const char* WIFI_PASS = "";
+// WiFi credentials live in an untracked src/secrets.h so no password is ever committed.
+// Copy src/secrets.h.example -> src/secrets.h and fill it in (secrets.h is gitignored).
+// With no secrets.h, WIFI_SSID defaults to "" -> the WiFi optimization is disabled and the
+// firmware just polls over BLE continuously (still fully functional).
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+#ifndef WIFI_SSID
+#  define WIFI_SSID ""
+#  define WIFI_PASS ""
+#endif
 
 static const char*    DEVICE_NAME_PREFIX = "AC200L";
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;   // how long to wait for the AP
@@ -53,6 +72,76 @@ static const uint16_t AC_OUTPUT_CTRL_REG = 3007;
 static const int      MAX_FAILED_REARMS = 5;
 static const uint32_t BACKOFF_AFTER_FAIL_MS = 1800000UL; // 30 min
 static const uint32_t REARM_GRACE_MS = 90000UL;          // leave alone after a success
+
+// ---- OLED status display ---------------------------------------------------
+// Onboard SSD1306 on the ideaspark ESP32-WROOM-32 (128x64, I2C @ 0x3C, SDA=21 SCL=22).
+// Purely informational: if no panel is present, begin() fails and the controller runs
+// headless — the re-arm logic never depends on the display. Set OLED_ENABLED 0 to build
+// for a bare board (drops the Adafruit deps' code paths at compile time).
+#define OLED_ENABLED 1
+static const uint8_t  OLED_SDA_PIN = 21;
+static const uint8_t  OLED_SCL_PIN = 22;
+static const uint8_t  OLED_ADDR    = 0x3C;
+static const int16_t  OLED_W = 128, OLED_H = 64;
+
+// Last-known values shown on the panel (updated from BLE reads / lifecycle events).
+static bool     g_haveState = false;
+static uint16_t g_dSoc = 0, g_dAcIn = 0, g_dAcOutW = 0;
+static bool     g_dAcOn = false;
+static char     g_dStatus[22] = "Booting";
+
+#if OLED_ENABLED
+static Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, -1);
+static bool g_oledOk = false;
+
+static void oledDraw() {
+  if (!g_oledOk) return;
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print(F("AC200L auto-restart"));
+  oled.drawFastHLine(0, 10, OLED_W, SSD1306_WHITE);
+
+  if (g_haveState) {
+    oled.setTextSize(2);
+    oled.setCursor(0, 15);
+    oled.printf("SoC %u%%", g_dSoc);
+    oled.setTextSize(1);
+    oled.setCursor(0, 37);
+    oled.printf("IN:%uW  OUT:%s", g_dAcIn, g_dAcOn ? "ON" : "OFF");
+  } else {
+    oled.setTextSize(1);
+    oled.setCursor(0, 22);
+    oled.print(F("(no telemetry yet)"));
+  }
+
+  // Status line: inverted bar along the bottom for at-a-glance state.
+  const int16_t barY = 52;
+  oled.fillRect(0, barY, OLED_W, OLED_H - barY, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_BLACK);
+  oled.setCursor(2, barY + 2);
+  oled.print(g_dStatus);
+  oled.display();
+}
+
+static void oledInit() {
+  Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
+  g_oledOk = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+  if (!g_oledOk) { Serial.println("OLED not found; running headless."); return; }
+  oledDraw();
+}
+
+// Set the bottom status line and repaint (telemetry globals are drawn as-is).
+static void oledStatus(const char* s) {
+  strncpy(g_dStatus, s, sizeof(g_dStatus) - 1);
+  g_dStatus[sizeof(g_dStatus) - 1] = '\0';
+  oledDraw();
+}
+#else
+static void oledInit() {}
+static void oledStatus(const char*) {}
+#endif
 
 // ---- BLE state -------------------------------------------------------------
 static NimBLEClient*               g_client     = nullptr;
@@ -150,6 +239,7 @@ static bool findChars() {
 
 static bool connectToUnit() {
   Serial.printf("Scanning %us for '%s*'...\n", SCAN_SECONDS, DEVICE_NAME_PREFIX);
+  oledStatus("Scanning...");
   NimBLEScan* scan = NimBLEDevice::getScan();
   scan->setActiveScan(true);
   NimBLEScanResults found = scan->start(SCAN_SECONDS, false);
@@ -173,6 +263,7 @@ static bool connectToUnit() {
   }
   scan->clearResults();
   Serial.println("  AC200L not found (on? in range? phone app closed?)");
+  oledStatus("Unit not found");
   return false;
 }
 
@@ -182,25 +273,32 @@ static void bleCheckAndRearm() {
   if (!connectToUnit()) return;
 
   State s;
-  if (!readState(s)) { Serial.println("read failed"); g_client->disconnect(); return; }
+  if (!readState(s)) { Serial.println("read failed"); oledStatus("BLE read failed"); g_client->disconnect(); return; }
 
   bool grid = s.acIn > 0;
   Serial.printf("SoC %u%% | AC-in %uW (%s) | AC-out %uW (%s)\n",
                 s.soc, s.acIn, grid ? "grid" : "OUTAGE",
                 s.acOutW, s.acOutputOn ? "on" : "OFF");
 
+  // Push fresh telemetry to the panel (status line set per-branch below).
+  g_haveState = true;
+  g_dSoc = s.soc; g_dAcIn = s.acIn; g_dAcOutW = s.acOutW; g_dAcOn = s.acOutputOn;
+
   uint32_t now = millis();
   bool need = grid && !s.acOutputOn;
 
   if (need && (int32_t)(g_graceUntil - now) > 0) {
     Serial.println("re-arm condition met but within grace/back-off; waiting");
+    oledStatus("WAITING (grace)");
   } else if (need && g_failedRearms >= MAX_FAILED_REARMS) {
     Serial.printf("re-arm failed %d times; backing off %lus\n",
                   g_failedRearms, BACKOFF_AFTER_FAIL_MS / 1000);
     g_graceUntil = now + BACKOFF_AFTER_FAIL_MS;
     g_failedRearms = 0;
+    oledStatus("BACK-OFF (failing)");
   } else if (need) {
     Serial.println("grid present + AC output OFF -> re-arming AC output");
+    oledStatus("RE-ARMING...");
     if (setAcOutput(true)) {
       delay(2000);
       State after;
@@ -208,16 +306,23 @@ static void bleCheckAndRearm() {
         Serial.println("re-arm SUCCESS (AC output now ON)");
         g_failedRearms = 0;
         g_graceUntil = now + REARM_GRACE_MS;
+        g_dAcOn = true;
+        oledStatus("RE-ARMED");
       } else {
         g_failedRearms++;
         Serial.printf("re-arm did not stick (attempt %d)\n", g_failedRearms);
+        oledStatus("re-arm no stick");
       }
     } else {
       g_failedRearms++;
       Serial.printf("re-arm write failed (attempt %d)\n", g_failedRearms);
+      oledStatus("re-arm wr failed");
     }
-  } else if (grid && s.acOutputOn) {
+  } else if (!grid) {
+    oledStatus("OUTAGE (no grid)");
+  } else {  // grid && s.acOutputOn
     g_failedRearms = 0;  // healthy
+    oledStatus("OK - armed");
   }
 
   if (g_client && g_client->isConnected()) g_client->disconnect();
@@ -249,18 +354,21 @@ void setup() {
   Serial.println("\nAC200L auto-restart controller (ESP32)");
   if (strlen(WIFI_SSID) == 0)
     Serial.println("WiFi optimization disabled (no SSID set); polling over BLE.");
+  oledInit();
   g_respSem = xSemaphoreCreateBinary();
 }
 
 void loop() {
   if (wifiPowerSeemsOn()) {
     Serial.println("WiFi reachable -> router powered / AC output on. Idle (BLE off).");
+    oledStatus("WiFi OK - router up");
     delay(WIFI_OK_INTERVAL_MS);
     return;
   }
 
   // WiFi unreachable (or disabled): bring up BLE, check the AC200L, re-arm if needed.
   Serial.println("WiFi not reachable -> checking AC200L over Bluetooth.");
+  oledStatus("Checking BLE...");
   NimBLEDevice::init("");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   bleCheckAndRearm();

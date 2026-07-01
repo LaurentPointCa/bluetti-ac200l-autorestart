@@ -87,9 +87,36 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
    - `esp32/README.md` — board to buy (avoid S2), build/flash/test.
    - COMPILE VERIFIED locally via PlatformIO (esp32dev): [SUCCESS], flash 45.8%, RAM 10.9%.
      Fixed NimBLE 1.4 API: getDevice() returns by value; connect by NimBLEAddress.
-5. Mac: optionally test the Python daemon (--dry-run then real) — same logic, sanity check.
-6. Buy ESP32 (classic ESP32 DevKit / WROOM-32), flash, test re-arm, mount near unit on wall USB.
-7. Optional later: WiFi push alerts (ntfy/Pushover) after network returns.
+5. [DONE] WiFi optimization in firmware: if the ESP32 can associate with the home AP, the
+   router is powered => AC output is on => idle (stay OFF Bluetooth so the phone app works),
+   re-check every 5 min. If WiFi unreachable => bring up BLE, check AC200L, re-arm. WiFi/BLE
+   used sequentially. Set WIFI_SSID/PASS in src/main.cpp; empty = continuous BLE polling.
+   Assumes the router is powered by the AC200L. Recompiles clean (flash 45.9%).
+6. [DONE] Pushed to private GitHub repo:
+   https://github.com/LaurentPointCa/bluetti-ac200l-autorestart (main). .pio/.venv/.claude
+   gitignored. 12 source/doc files. Top-level README added.
+7. [DONE + VERIFIED ON HARDWARE 2026-07-01] ESP32 flashed & running: ideaspark ESP32-WROOM-32,
+   micro-USB (CH340), enumerated as /dev/cu.usbserial-1130. NO driver install needed (in-box
+   CH34x). Enumeration gotcha: first two micro-USB cables were CHARGE-ONLY (LED lit, no USB
+   device in `ioreg -p IOUSB` at all); 3rd cable = data → worked. Flashed WiFi-off bench build.
+   Live proof: firmware boots, OLED init OK (no "headless" msg), BLE scan FOUND the real unit
+   (AC200L2439001209551, 88:13:bf:37:7f:5a), connected on retry, read telemetry. OLED shows
+   SoC 100% / OUT:ON / "OK - armed". Re-arm WRITE not exercised (unit already healthy) but same
+   framing as the proven PoC. NOTE: pio device monitor needs a TTY (fails headless); read serial
+   via .venv-pio/bin/python + pyserial with an RTS reset pulse instead.
+8. [DONE 2026-07-01] OLED status display added to ESP32 firmware. Board: ideaspark
+   ESP32-WROOM-32, onboard 0.96" SSD1306 (128x64, I2C @ 0x3C, SDA=21/SCL=22 — confirmed by
+   Laurent, matches lifebreath `Wire.begin(21,22)`). Shows big SoC / AC-in W / AC-out on-off /
+   state bar (Scanning/OK/OUTAGE/RE-ARMING/RE-ARMED/WAITING/BACK-OFF/WiFi OK). OLED is optional
+   (runtime-disabled if begin() fails → headless; compile-time via OLED_ENABLED 0). Added
+   Adafruit SSD1306+GFX to platformio.ini. COMPILE VERIFIED (esp32dev): [SUCCESS], flash 48.4%,
+   RAM 11.1%. pio CLI reinstalled to esp32/.venv-pio (prior penv was gone). README updated.
+9. Optional later: WiFi push alerts (ntfy/Pushover) after network returns.
+10. [2026-07-01] Secrets hygiene for public GitHub: WiFi creds moved to untracked
+    esp32/src/secrets.h (gitignored) via __has_include; committed secrets.h.example template.
+    Repo scanned — no secrets currently tracked. Ready to publish. Still TODO: for deployment
+    create secrets.h with real SSID/PASS, reflash; then commit firmware changes + flip repo to
+    public.
 3. If solid: buy Pi Zero 2 W, port the script, power from wall, deploy near the unit, automate
    the re-arm + (deferred) alerting.
 4. Keep the button pusher as the fallback if BLE proves flaky in practice.
