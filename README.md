@@ -8,8 +8,8 @@ In UPS mode, if grid power fails and the outage lasts long enough to drain the A
 the unit shuts down. When grid power returns the unit **auto-wakes and recharges**, but it does
 **not** re-enable its AC output — so everything plugged in (e.g. your home internet gear) stays
 dead until someone manually turns AC output back on. Bluetti declined to add an auto-restart
-setting (citing safety), and the native UPS "SoC low" floor does **not** help: it's ignored
-during a real outage, so the unit still drains to 0.
+setting (citing safety), yet supports it in other models, and the native UPS "SoC low" floor 
+does **not** help: it's ignored during a real outage, so the unit still drains to 0.
 
 ## The fix
 
