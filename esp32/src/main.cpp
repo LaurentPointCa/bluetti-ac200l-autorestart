@@ -354,7 +354,14 @@ static bool connectToUnit() {
                   d.getAddress().toString().c_str());
     if (!g_client) g_client = NimBLEDevice::createClient();   // reuse one client for all cycles
     g_client->setConnectTimeout(10);
-    if (!g_client->connect(d.getAddress())) {
+    // The first connect after a scan often fails on this stack; retry a couple times before
+    // giving up (recovers the transient failure in-session instead of waiting a whole poll cycle).
+    bool connected = false;
+    for (int attempt = 1; attempt <= 3 && !connected; attempt++) {
+      if (attempt > 1) { Serial.printf("  connect retry %d/3\n", attempt); delay(600); }
+      connected = g_client->connect(d.getAddress());
+    }
+    if (!connected) {
       Serial.println("  connect failed");
       scan->clearResults();
       return false;
