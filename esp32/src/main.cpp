@@ -412,9 +412,16 @@ static void bleCheckAndRearm() {
     g_triggered = true;                 // latch: the controller had to intervene (until reset)
     oledStatus("RE-ARMING...");
     if (setAcOutput(true)) {
-      delay(2000);
+      // The AC200L's output relay can take several seconds to engage and report, so poll the
+      // read-back (not a single check) — confirm in-session rather than falsely reporting failure
+      // and waiting for the next poll cycle. Exit as soon as the unit reports output on.
       State after;
-      if (readState(after) && after.acOutputOn) {
+      bool armed = false;
+      for (int i = 0; i < 6 && !armed; i++) {
+        delay(1500);
+        if (readState(after) && after.acOutputOn) armed = true;
+      }
+      if (armed) {
         Serial.println("re-arm SUCCESS (AC output now ON)");
         g_failedRearms = 0;
         g_graceUntil = now + REARM_GRACE_MS;
@@ -423,8 +430,8 @@ static void bleCheckAndRearm() {
         oledStatus("RE-ARMED");
       } else {
         g_failedRearms++;
-        Serial.printf("re-arm did not stick (attempt %d)\n", g_failedRearms);
-        oledStatus("re-arm no stick");
+        Serial.printf("re-arm not confirmed within ~9s (attempt %d); will recheck next poll\n", g_failedRearms);
+        oledStatus("re-arm pending");
       }
     } else {
       g_failedRearms++;

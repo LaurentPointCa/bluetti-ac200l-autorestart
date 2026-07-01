@@ -127,6 +127,17 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+17. [DONE + VERIFIED ON HARDWARE 2026-07-01] ULTIMATE TEST passed: flashed garbage SSID so ESP
+    presumes offline -> fast BLE poll path. Flipped AC output off; ESP found unit, read output
+    OFF + SoC-safe, wrote re-arm, output back ON. First run showed "re-arm did not stick" — the
+    2s read-back fired before the AC200L relay reported. FIX: poll the read-back up to ~9s
+    (6x1.5s), confirm in-session, exit as soon as output reports on; renamed msg to "not confirmed
+    within ~9s" / OLED "re-arm pending". Re-test gave a CLEAN "re-arm SUCCESS" (confirmed in 2s).
+    Field notes: (a) phone holding the BLE slot => unit stops advertising => ESP "target device
+    not found" (toggle phone BT off to free it); (b) full end-to-end offline->detect->re-arm->
+    confirm proven. Restored config.h to SSID=Internet, flashed production build (verified SSID
+    seen -> healthy + heartbeat).
+
 16. [DONE + VERIFIED ON HARDWARE 2026-07-01] FIXED grid-detection bug found during a live re-arm
     test. `grid = ac_input_power(reg37) > 0` misfires: a full battery on grid with output off
     draws ~0 W, so the firmware wrongly saw "OUTAGE" and refused to re-arm. Reg dump of 36-49
