@@ -23,7 +23,8 @@
  *   - SSID NOT seen -> router likely unpowered (AC output off / dead-latch). Switch on
  *                      Bluetooth, check the unit, re-arm if grid is present.
  *   - WIFI_SSID empty -> optimization off; always check over BLE every CHECK_INTERVAL_MS (5 min).
- * WiFi and BLE are used sequentially (never both radios at once) to avoid coexistence issues.
+ * NimBLE is initialized once and left up; we connect/disconnect per check but never deinit
+ * (deinit-every-cycle deadlocks the NimBLE host task). WiFi is only ever a brief passive scan.
  *
  * Power this board from a GRID wall outlet (USB), NOT from the AC200L, and place it within
  * Bluetooth (and WiFi) range of the unit.
@@ -161,16 +162,16 @@ static void oledDraw() {
     oled.print(F("(no telemetry yet)"));
   }
 
-  // WiFi detected? + countdown to the next check.
+  // WiFi detected? + countdown to the next check (always shown; "checking" while a check runs).
   oled.setTextSize(1);
   oled.setCursor(0, 46);
   oled.printf("WiFi:%s", g_wifiSeen < 0 ? "off" : (g_wifiSeen ? "ok" : "--"));
+  oled.setCursor(60, 46);           // fixed column, kept off the right edge so it's never clipped
   if (g_nextCheckSecs) {
-    char buf[14];
-    snprintf(buf, sizeof(buf), "next %lu:%02lu",
-             (unsigned long)(g_nextCheckSecs / 60), (unsigned long)(g_nextCheckSecs % 60));
-    oled.setCursor(OLED_W - (int16_t)strlen(buf) * 6, 46);
-    oled.print(buf);
+    oled.printf("in %lu:%02lu",
+                (unsigned long)(g_nextCheckSecs / 60), (unsigned long)(g_nextCheckSecs % 60));
+  } else {
+    oled.print("checking");
   }
 
   // Full target device ID along the bottom, for at-a-glance verification.
@@ -317,7 +318,7 @@ static bool connectToUnit() {
     if (d.getName() != TARGET_DEVICE_ID) continue;   // exact match only
     Serial.printf("Found %s [%s]; connecting...\n", d.getName().c_str(),
                   d.getAddress().toString().c_str());
-    g_client = NimBLEDevice::createClient();
+    if (!g_client) g_client = NimBLEDevice::createClient();   // reuse one client for all cycles
     g_client->setConnectTimeout(10);
     if (!g_client->connect(d.getAddress())) {
       Serial.println("  connect failed");
@@ -335,8 +336,10 @@ static bool connectToUnit() {
   return false;
 }
 
-// One full BLE session: connect, read, re-arm if needed, disconnect. BLE radio must be
-// initialized by the caller and is left initialized (deinit handled in loop()).
+// One full BLE session: connect, read, re-arm if needed, disconnect. NimBLE is initialized
+// once in setup() and stays up; we reuse a single client and only connect/disconnect per cycle
+// (no per-loop deinit — that deadlocks). Being initialized-but-disconnected does NOT hold the
+// unit's single BLE slot, so the phone app is free between checks.
 static void bleCheckAndRearm() {
   if (!connectToUnit()) return;
 
@@ -394,7 +397,10 @@ static void bleCheckAndRearm() {
     oledStatus("OK - Armed");
   }
 
-  if (g_client && g_client->isConnected()) g_client->disconnect();
+  if (g_client && g_client->isConnected()) {
+    g_client->disconnect();
+    delay(200);   // let the disconnect complete before the radio goes idle / WiFi scans
+  }
 }
 
 // ---- WiFi beacon probe -----------------------------------------------------
@@ -433,6 +439,10 @@ void setup() {
     Serial.printf("WiFi beacon optimization on for SSID '%s' (idle 15 min when seen).\n", WIFI_SSID);
   oledInit();
   g_respSem = xSemaphoreCreateBinary();
+  // Initialize NimBLE once and leave it up for the life of the program. We connect/disconnect
+  // per check but never deinit — deinit(true) every cycle deadlocks the host task.
+  NimBLEDevice::init("");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 }
 
 void loop() {
@@ -452,14 +462,10 @@ void loop() {
     return;
   }
 
-  // SSID not seen (or WiFi disabled): bring up BLE, check the unit, re-arm if needed.
+  // SSID not seen (or WiFi disabled): check the unit over BLE and re-arm if needed.
   Serial.println("SSID not seen -> checking the AC200L over Bluetooth.");
   oledStatus("Checking BLE...");
-  NimBLEDevice::init("");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   bleCheckAndRearm();
-  NimBLEDevice::deinit(true);            // free the radio so the next WiFi scan is clean
-  g_client = nullptr; g_writeChar = nullptr; g_notifyChar = nullptr;
 
   sleepWithCountdown(CHECK_INTERVAL_MS);
 }

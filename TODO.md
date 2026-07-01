@@ -127,6 +127,15 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+13. [DONE + VERIFIED ON HARDWARE 2026-07-01] FIXED a real hang (not cosmetic): board did ONE
+    BLE check then wedged forever ("stuck at checking", countdown never started, serial silent
+    with no crash trace). Root cause: NimBLEDevice::deinit(true) every loop deadlocks the NimBLE
+    host task. Fix: init NimBLE ONCE in setup(), reuse a single client, connect/disconnect per
+    check, never deinit (+200ms settle after disconnect). Being init-but-disconnected does NOT
+    hold the unit's BLE slot, so the phone app is still free between checks. WiFi scan coexists
+    fine. Verified: with a temp 15s interval the board ran repeated check cycles (no hang);
+    restored to 5 min. This bug would have made the controller useless in the field.
+
 12. [DONE + VERIFIED ON HARDWARE 2026-07-01] OLED cosmetic rework (two-colour panel). Top ~16px
     yellow = attention strip: status text yellow-on-black; on a re-arm it LATCHES to black-on-
     yellow + "TRIGGERED" (right side), cleared only by physical reset. SoC line shifted down to
