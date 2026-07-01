@@ -418,7 +418,8 @@ static void bleCheckAndRearm() {
         Serial.println("re-arm SUCCESS (AC output now ON)");
         g_failedRearms = 0;
         g_graceUntil = now + REARM_GRACE_MS;
-        g_dAcOn = true;
+        // Refresh the panel from the post-re-arm read-back so IN/SoC/OUT are all current.
+        g_dSoc = after.soc; g_dAcIn = after.acIn; g_dAcOutW = after.acOutW; g_dAcOn = after.acOutputOn;
         oledStatus("RE-ARMED");
       } else {
         g_failedRearms++;
