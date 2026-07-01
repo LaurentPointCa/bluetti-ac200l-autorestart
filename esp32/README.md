@@ -67,17 +67,27 @@ That exactly reproduces the post-outage recovery. For a faster test loop, tempor
 ## OLED status display (optional)
 
 If an **SSD1306 128×64** panel is on I2C `0x3C` (onboard on the ideaspark board, `SDA=21`,
-`SCL=22`) the firmware shows live status; otherwise it runs headless and the re-arm logic is
-unaffected. The screen shows big **SoC %**, the **AC-in W** and **AC-out on/off** line, and a
-bottom state bar that reads one of:
+`SCL=22`) the firmware shows a live dashboard; otherwise it runs headless and the re-arm logic
+is unaffected. This is a **two-colour panel** — the top ~16px are physically **yellow** and are
+used as an attention strip.
 
-- `Scanning...` / `Unit not found` — looking for the AC200L over BLE.
-- `OK - armed` — grid present, AC output on (healthy).
+**Yellow attention strip (top):** the current status, as yellow-on-black:
+- `Scanning...` / `Unit not found` — looking for the target unit over BLE.
+- `OK - Armed` — grid present, AC output on (healthy).
 - `OUTAGE (no grid)` — no grid input seen (unit on battery).
 - `RE-ARMING...` → `RE-ARMED` — the recovery nudge in progress / succeeded.
 - `WAITING (grace)` / `BACK-OFF (failing)` — post-success grace or repeated-failure back-off.
 - `WiFi OK - router up` — SSID beacon seen ⇒ router powered ⇒ all good (idle 15 min).
 - `No device ID set` — `TARGET_DEVICE_ID` is empty, so re-arm is disabled (safe no-op).
+
+**Latched `TRIGGERED` alert:** the instant an auto re-arm fires, the yellow strip **flips to
+black-on-yellow** and shows **`TRIGGERED`** on the right. This latch is **never cleared in
+software** — it stays until you physically **press reset / reboot**, so you never miss the fact
+that the controller had to intervene.
+
+**Blue zone (below):** big **SoC %**, the **AC-in W / AC-out on-off** line, a **WiFi indicator**
+(`WiFi:ok` seen / `WiFi:--` not seen / `WiFi:off` not configured) with a **countdown** to the
+next check, and the **full `TARGET_DEVICE_ID`** along the bottom for verification.
 
 Pins/address are set near the top of `src/main.cpp`. To build for a bare board without the
 display, set `#define OLED_ENABLED 0` there (drops the Adafruit dependencies from the build).

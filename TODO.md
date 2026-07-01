@@ -127,6 +127,13 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+12. [DONE + VERIFIED ON HARDWARE 2026-07-01] OLED cosmetic rework (two-colour panel). Top ~16px
+    yellow = attention strip: status text yellow-on-black; on a re-arm it LATCHES to black-on-
+    yellow + "TRIGGERED" (right side), cleared only by physical reset. SoC line shifted down to
+    clear the yellow. Blue zone adds WiFi indicator (ok/--/off), a live per-second countdown to
+    next check (sleepWithCountdown replaces blocking delay), and the full TARGET_DEVICE_ID along
+    the bottom for verification. Documented in main.cpp header + esp32/README.md. Compiles + flashed;
+    read SoC 100%/122W confirms live layout.
 3. If solid: buy Pi Zero 2 W, port the script, power from wall, deploy near the unit, automate
    the re-arm + (deferred) alerting.
 4. Keep the button pusher as the fallback if BLE proves flaky in practice.

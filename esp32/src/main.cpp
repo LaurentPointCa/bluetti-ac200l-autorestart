@@ -28,12 +28,19 @@
  * Power this board from a GRID wall outlet (USB), NOT from the AC200L, and place it within
  * Bluetooth (and WiFi) range of the unit.
  *
- * OLED status (optional)
- * ----------------------
+ * OLED status (optional, two-colour panel)
+ * ----------------------------------------
  * If an SSD1306 128x64 panel is present (onboard on the ideaspark ESP32-WROOM-32, I2C @ 0x3C,
- * SDA=21/SCL=22) it shows live SoC, AC-in W, AC-out on/off, and a state line (Scanning /
- * WAITING / RE-ARMING / RE-ARMED / OK / OUTAGE / WiFi OK). It is purely informational: if no
- * panel is found the firmware runs headless and the re-arm logic is unaffected.
+ * SDA=21/SCL=22) it shows a live dashboard. The panel's top ~16px are physically YELLOW and are
+ * used as an attention strip:
+ *   - Normal: yellow text on black showing the current status (OK - Armed / Scanning / OUTAGE /
+ *     RE-ARMING / WAITING / BACK-OFF / WiFi OK / No device ID set).
+ *   - LATCHED alert: the instant an auto re-arm fires, the strip flips to BLACK-ON-YELLOW and
+ *     shows "TRIGGERED" at the right. This latch is NEVER cleared in software — it stays until
+ *     you physically press reset/reboot, so an intervention is never missed after the fact.
+ * The blue zone shows big SoC%, the AC-in W / AC-out on-off line, a WiFi-detected indicator
+ * (ok/--/off) with a countdown to the next check, and the full TARGET_DEVICE_ID for verification.
+ * Purely informational: if no panel is found the firmware runs headless, logic unaffected.
  *
  * Protocol (proven on real AC200L hardware): Write char 0000ff02-..., Notify char 0000ff01-...
  * (service searched, not hardcoded). Modbus over GATT. Read range 36..49 (func 0x03):
@@ -98,11 +105,21 @@ static const uint8_t  OLED_SCL_PIN = 22;
 static const uint8_t  OLED_ADDR    = 0x3C;
 static const int16_t  OLED_W = 128, OLED_H = 64;
 
+// This is a two-colour panel: the top OLED_YELLOW_H rows are physically YELLOW, the rest blue.
+// We use the yellow strip as an "attention" area (see oledDraw / the TRIGGERED latch below).
+static const int16_t OLED_YELLOW_H = 16;
+
 // Last-known values shown on the panel (updated from BLE reads / lifecycle events).
 static bool     g_haveState = false;
 static uint16_t g_dSoc = 0, g_dAcIn = 0, g_dAcOutW = 0;
 static bool     g_dAcOn = false;
 static char     g_dStatus[22] = "Booting";
+// TRIGGERED latch: set true the moment we fire an auto re-arm, and NEVER cleared in software —
+// it persists until the board is physically reset/rebooted. This is a deliberate "did the
+// controller have to intervene?" flag so a re-arm event isn't missed after the fact.
+static bool     g_triggered     = false;
+static int8_t   g_wifiSeen      = -1;   // -1 = WiFi disabled, 0 = SSID not seen, 1 = SSID seen
+static uint32_t g_nextCheckSecs = 0;    // seconds until the next check, for the OLED countdown
 
 #if OLED_ENABLED
 static Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, -1);
@@ -111,31 +128,55 @@ static bool g_oledOk = false;
 static void oledDraw() {
   if (!g_oledOk) return;
   oled.clearDisplay();
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);
-  oled.print(F("AC200L auto-restart"));
-  oled.drawFastHLine(0, 10, OLED_W, SSD1306_WHITE);
 
+  // --- Yellow attention strip: current status. Normally yellow-on-black; once a re-arm has
+  //     fired it latches to black-on-yellow with "TRIGGERED" at the right until reset.
+  if (g_triggered) {
+    oled.fillRect(0, 0, OLED_W, OLED_YELLOW_H, SSD1306_WHITE);   // yellow background
+    oled.setTextColor(SSD1306_BLACK);
+  } else {
+    oled.setTextColor(SSD1306_WHITE);                           // yellow text on black
+  }
+  oled.setTextSize(1);
+  oled.setCursor(2, 4);
+  oled.print(g_dStatus);
+  if (g_triggered) {
+    static const char* kTrig = "TRIGGERED";
+    oled.setCursor(OLED_W - (int16_t)strlen(kTrig) * 6, 4);
+    oled.print(kTrig);
+  }
+
+  // --- Blue zone: telemetry, WiFi/countdown, and the full device ID.
+  oled.setTextColor(SSD1306_WHITE);
   if (g_haveState) {
     oled.setTextSize(2);
-    oled.setCursor(0, 15);
+    oled.setCursor(0, 19);            // shifted down one row so it clears the yellow strip
     oled.printf("SoC %u%%", g_dSoc);
     oled.setTextSize(1);
     oled.setCursor(0, 37);
-    oled.printf("IN:%uW  OUT:%s", g_dAcIn, g_dAcOn ? "ON" : "OFF");
+    oled.printf("IN:%uW OUT:%s", g_dAcIn, g_dAcOn ? "ON" : "OFF");
   } else {
     oled.setTextSize(1);
-    oled.setCursor(0, 22);
+    oled.setCursor(0, 26);
     oled.print(F("(no telemetry yet)"));
   }
 
-  // Status line: inverted bar along the bottom for at-a-glance state.
-  const int16_t barY = 52;
-  oled.fillRect(0, barY, OLED_W, OLED_H - barY, SSD1306_WHITE);
-  oled.setTextColor(SSD1306_BLACK);
-  oled.setCursor(2, barY + 2);
-  oled.print(g_dStatus);
+  // WiFi detected? + countdown to the next check.
+  oled.setTextSize(1);
+  oled.setCursor(0, 46);
+  oled.printf("WiFi:%s", g_wifiSeen < 0 ? "off" : (g_wifiSeen ? "ok" : "--"));
+  if (g_nextCheckSecs) {
+    char buf[14];
+    snprintf(buf, sizeof(buf), "next %lu:%02lu",
+             (unsigned long)(g_nextCheckSecs / 60), (unsigned long)(g_nextCheckSecs % 60));
+    oled.setCursor(OLED_W - (int16_t)strlen(buf) * 6, 46);
+    oled.print(buf);
+  }
+
+  // Full target device ID along the bottom, for at-a-glance verification.
+  oled.setCursor(0, 56);
+  oled.print(strlen(TARGET_DEVICE_ID) ? TARGET_DEVICE_ID : "(no device ID)");
+
   oled.display();
 }
 
@@ -146,7 +187,7 @@ static void oledInit() {
   oledDraw();
 }
 
-// Set the bottom status line and repaint (telemetry globals are drawn as-is).
+// Set the attention-strip status text and repaint (other globals are drawn as-is).
 static void oledStatus(const char* s) {
   strncpy(g_dStatus, s, sizeof(g_dStatus) - 1);
   g_dStatus[sizeof(g_dStatus) - 1] = '\0';
@@ -154,8 +195,20 @@ static void oledStatus(const char* s) {
 }
 #else
 static void oledInit() {}
+static void oledDraw() {}
 static void oledStatus(const char*) {}
 #endif
+
+// Sleep for ms while refreshing the OLED once a second, so the countdown stays live.
+static void sleepWithCountdown(uint32_t ms) {
+  for (uint32_t r = ms / 1000; r > 0; r--) {
+    g_nextCheckSecs = r;
+    oledDraw();
+    delay(1000);
+  }
+  g_nextCheckSecs = 0;
+  oledDraw();
+}
 
 // ---- BLE state -------------------------------------------------------------
 static NimBLEClient*               g_client     = nullptr;
@@ -313,6 +366,7 @@ static void bleCheckAndRearm() {
     oledStatus("BACK-OFF (failing)");
   } else if (need) {
     Serial.println("grid present + AC output OFF -> re-arming AC output");
+    g_triggered = true;                 // latch: the controller had to intervene (until reset)
     oledStatus("RE-ARMING...");
     if (setAcOutput(true)) {
       delay(2000);
@@ -337,7 +391,7 @@ static void bleCheckAndRearm() {
     oledStatus("OUTAGE (no grid)");
   } else {  // grid && s.acOutputOn
     g_failedRearms = 0;  // healthy
-    oledStatus("OK - armed");
+    oledStatus("OK - Armed");
   }
 
   if (g_client && g_client->isConnected()) g_client->disconnect();
@@ -349,7 +403,7 @@ static void bleCheckAndRearm() {
 // No association, no password — only the (non-secret) SSID name is used. Returns false when
 // the optimization is disabled (no SSID), so the caller always falls through to the BLE check.
 static bool ssidBeaconPresent() {
-  if (strlen(WIFI_SSID) == 0) return false;
+  if (strlen(WIFI_SSID) == 0) { g_wifiSeen = -1; return false; }
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(false, true);                 // ensure we only listen, never associate
   int n = WiFi.scanNetworks(false, false);      // blocking scan, hidden APs excluded
@@ -360,6 +414,7 @@ static bool ssidBeaconPresent() {
   WiFi.scanDelete();
   WiFi.mode(WIFI_OFF);
   delay(100);
+  g_wifiSeen = found ? 1 : 0;
   return found;
 }
 
@@ -385,7 +440,7 @@ void loop() {
   if (strlen(TARGET_DEVICE_ID) == 0) {
     Serial.println("No target device ID configured; not re-arming.");
     oledStatus("No device ID set");
-    delay(CHECK_INTERVAL_MS);
+    sleepWithCountdown(CHECK_INTERVAL_MS);
     return;
   }
 
@@ -393,7 +448,7 @@ void loop() {
   if (ssidBeaconPresent()) {
     Serial.println("SSID present -> router powered / AC output on. Idle 15 min (no re-arm).");
     oledStatus("WiFi OK - router up");
-    delay(WIFI_OK_INTERVAL_MS);
+    sleepWithCountdown(WIFI_OK_INTERVAL_MS);
     return;
   }
 
@@ -406,5 +461,5 @@ void loop() {
   NimBLEDevice::deinit(true);            // free the radio so the next WiFi scan is clean
   g_client = nullptr; g_writeChar = nullptr; g_notifyChar = nullptr;
 
-  delay(CHECK_INTERVAL_MS);
+  sleepWithCountdown(CHECK_INTERVAL_MS);
 }
