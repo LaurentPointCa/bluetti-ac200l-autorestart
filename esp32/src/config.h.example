@@ -1,0 +1,19 @@
+// Device configuration — COPY THIS FILE to config.h and fill it in.
+//
+//   cp src/config.h.example src/config.h
+//
+// config.h is gitignored, so your device ID / network name are never committed. Nothing here
+// is a password — the WiFi optimization only listens for the SSID beacon, it never associates.
+#pragma once
+
+// REQUIRED. The exact Bluetti device ID shown in the BLUETTI app (== the BLE advertised name),
+// e.g. "AC200L2439001209551". The ESP32 connects to and re-arms ONLY this unit. Leave it empty
+// to disable re-arm entirely (safe no-op) — a security guard so an unconfigured board can never
+// flip on a neighbour's unit or a second battery you didn't mean to.
+#define TARGET_DEVICE_ID "AC200L2439001209551"
+
+// OPTIONAL. Your home WiFi network NAME only (no password — the firmware just listens for the
+// router's beacon to tell whether it's powered). When set and the SSID is seen on the air, the
+// controller assumes the router is up (AC output on), skips the BLE re-arm, and checks only
+// every 15 min. Leave empty to always check over BLE every 5 min.
+#define WIFI_SSID ""

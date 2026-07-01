@@ -49,8 +49,9 @@ enumerates in `ioreg` but no `/dev/cu.*` node appears, then install WCH's CH34x 
 
 ## Testing
 
-With the **BLUETTI phone app closed** (the unit allows only one BLE connection), watch the
-serial monitor. You should see, every ~60s:
+First set `TARGET_DEVICE_ID` in `src/config.h` (see Configuration below). With the **BLUETTI
+phone app closed** (the unit allows only one BLE connection), watch the serial monitor. Each
+BLE check (every 5 min, or 15 min while the WiFi SSID is seen) you should see:
 ```
 SoC 87% | AC-in 142W (grid) | AC-out 118W (on)
 ```
@@ -61,7 +62,7 @@ grid present + AC output OFF -> re-arming AC output
 re-arm SUCCESS (AC output now ON)
 ```
 That exactly reproduces the post-outage recovery. For a faster test loop, temporarily lower
-`POLL_INTERVAL_MS` near the top of `src/main.cpp`.
+`CHECK_INTERVAL_MS` near the top of `src/main.cpp`.
 
 ## OLED status display (optional)
 
@@ -75,28 +76,39 @@ bottom state bar that reads one of:
 - `OUTAGE (no grid)` — no grid input seen (unit on battery).
 - `RE-ARMING...` → `RE-ARMED` — the recovery nudge in progress / succeeded.
 - `WAITING (grace)` / `BACK-OFF (failing)` — post-success grace or repeated-failure back-off.
-- `WiFi OK - router up` — WiFi optimization idle state (router powered ⇒ all good).
+- `WiFi OK - router up` — SSID beacon seen ⇒ router powered ⇒ all good (idle 15 min).
+- `No device ID set` — `TARGET_DEVICE_ID` is empty, so re-arm is disabled (safe no-op).
 
 Pins/address are set near the top of `src/main.cpp`. To build for a bare board without the
 display, set `#define OLED_ENABLED 0` there (drops the Adafruit dependencies from the build).
 
-## WiFi optimization (recommended)
+## Configuration (required)
 
-Set your home network in an **untracked** credentials file so no password is ever committed:
+Config lives in an **untracked** `src/config.h` so nothing personal is committed:
 
 ```sh
-cp src/secrets.h.example src/secrets.h   # then edit src/secrets.h
+cp src/config.h.example src/config.h   # then edit src/config.h
 ```
 
-`src/secrets.h` is gitignored; `main.cpp` includes it only if present (`__has_include`). With no
-`secrets.h` the build still succeeds — `WIFI_SSID` defaults to empty and the firmware polls over
-BLE continuously (WiFi optimization off). **Do not** hardcode credentials in `main.cpp`.
+It defines two things (`main.cpp` includes the file only if present, via `__has_include`):
 
-How it works: **your WiFi router is powered by the AC200L**, so if the ESP32 can associate
-with the AP, the router is up, which means AC output is on and everything is fine. In that
-state the firmware stays **completely off Bluetooth** and just idles, re-checking every 5
-minutes. Only when WiFi becomes unreachable (router unpowered → AC output off / dead-latch)
-does it switch on Bluetooth, check the AC200L, and re-arm.
+- **`TARGET_DEVICE_ID`** — **required.** The exact Bluetti device ID shown in the BLUETTI app
+  (it's the BLE advertised name, e.g. `AC200L2439001209551`). The ESP32 connects to and
+  re-arms **only** this unit, by exact-name match. **Leave it empty and re-arm is disabled
+  entirely** (the OLED shows `No device ID set`). This is a deliberate **security guard**: an
+  unconfigured or mis-flashed board can never flip on a neighbour's unit or a second battery.
+- **`WIFI_SSID`** — optional; see below. **No password** is ever needed or stored.
+
+## WiFi optimization (optional, passwordless)
+
+Set `WIFI_SSID` in `config.h` to your home network **name** (SSID only — no password). 
+
+How it works: **your router is powered by the AC200L**, so if its SSID is on the air, the
+router booted, which means AC output is on and everything is fine. The firmware simply **scans
+for the SSID beacon** — it never associates, so there's no password to store or leak (the SSID
+name isn't a secret). When the SSID is seen, the firmware stays **completely off Bluetooth** and
+idles, re-checking every **15 min**. When the SSID is *not* seen (router unpowered → AC output
+off / dead-latch), it switches on Bluetooth, checks the unit, and re-arms.
 
 Two benefits:
 1. During normal operation the ESP32 isn't holding the unit's Bluetooth slot, so **your phone
@@ -106,26 +118,26 @@ Two benefits:
 Requirements & assumptions:
 - The ESP32 must be within **WiFi range** as well as Bluetooth range.
 - Assumes the **router is on the AC200L**. If your router is on separate/grid power, leave
-  `secrets.h` absent — then the firmware just polls over BLE continuously (still correct, but
-  it holds the BLE slot, so close the phone app while it runs).
+  `WIFI_SSID` empty — then the firmware checks over BLE every **5 min** (still correct; it grabs
+  the BLE slot briefly each check, so close the phone app if it clashes).
 - WiFi and BLE are used **sequentially** (never both radios at once) to avoid ESP32
   coexistence problems.
 
-Leave `secrets.h` absent to disable this and fall back to continuous BLE polling.
+Leave `WIFI_SSID` empty to disable this and check over BLE every 5 minutes.
 
 ## Tuning (top of `src/main.cpp`)
 
-- `WIFI_OK_INTERVAL_MS` — idle time when WiFi is up (default 5 min).
-- `BLE_RETRY_INTERVAL_MS` — re-check cadence when WiFi is down (default 45s).
-- `DEVICE_NAME_PREFIX` — BLE name to match (default `AC200L`).
+- `WIFI_OK_INTERVAL_MS` — idle time when the SSID is seen (default 15 min).
+- `CHECK_INTERVAL_MS` — BLE re-check cadence otherwise (default 5 min).
+- `TARGET_DEVICE_ID` / `WIFI_SSID` — set these in `src/config.h`, not here.
 - Safety back-off: `MAX_FAILED_REARMS`, `BACKOFF_AFTER_FAIL_MS`, `REARM_GRACE_MS`.
 
 ## Notes & residual risks
 
 - **Single BLE connection:** the unit allows only one BLE connection at a time. With the WiFi
   optimization enabled, the ESP32 is normally OFF Bluetooth, so the phone app works as usual;
-  it only takes the BLE slot briefly during a recovery. With WiFi disabled it holds the slot
-  continuously — unplug it if you need the app.
+  it only takes the BLE slot briefly during a recovery. With WiFi disabled it connects for a
+  moment every 5 min (then disconnects) — close the phone app if the two clash.
 - **Service UUID:** the firmware searches all services for the `ff01`/`ff02` characteristics
   rather than assuming `ff00` vs `fff0`, so it works regardless of which the unit uses.
 - **Firmware hang:** the rare AC200L state where buttons AND Bluetooth freeze until a manual

@@ -1,23 +1,29 @@
 /*
  * AC200L auto-restart controller — ESP32 firmware (NimBLE-Arduino).
  *
- * Standalone, network-independent re-arm. Watches the Bluetti AC200L over Bluetooth LE and
- * re-enables AC output whenever grid power is present but AC output is off — the state the
- * unit latches into after a full-drain outage. The unit auto-wakes and recharges itself when
- * grid returns; this provides the one nudge it won't do on its own: turning AC output on.
+ * Standalone, network-independent re-arm. Watches one specific Bluetti AC200L over Bluetooth
+ * LE and re-enables AC output whenever grid power is present but AC output is off — the state
+ * the unit latches into after a full-drain outage. The unit auto-wakes and recharges itself
+ * when grid returns; this provides the one nudge it won't do on its own: turning AC output on.
  *
- * WiFi-gated optimization
- * -----------------------
- * Your WiFi router is powered by the AC200L, so "the AP is reachable" implies "AC output is
- * on and the router has booted" — i.e. everything is fine. The firmware uses this as a cheap
- * top-level signal:
- *   - WiFi AP reachable  -> all good. Stay OFF Bluetooth (so the phone app can use it) and
- *                           idle, re-checking every WIFI_OK_INTERVAL_MS (default 5 min).
- *   - WiFi NOT reachable -> the router is likely unpowered (AC output off / dead-latch).
- *                           Switch on Bluetooth, check the AC200L, and re-arm AC output if
- *                           grid is present. Re-check more often (BLE_RETRY_INTERVAL_MS).
+ * Target device (REQUIRED, security)
+ * ----------------------------------
+ * TARGET_DEVICE_ID (in the untracked src/config.h) is the exact Bluetti device ID from the
+ * app (== the BLE advertised name). The firmware connects to and re-arms ONLY that unit, by
+ * exact-name match — never any other AC200L. If it is empty the firmware re-arms nothing at
+ * all (safe no-op): so a mis-flashed or unconfigured board can't flip on someone else's unit.
+ *
+ * WiFi beacon optimization (OPTIONAL, passwordless)
+ * -------------------------------------------------
+ * Your WiFi router is powered by the AC200L, so if the router's SSID is on the air, AC output
+ * is on and everything is fine. The firmware just SCANS for the configured WIFI_SSID beacon —
+ * it never associates, so NO WiFi password is needed or stored (the SSID name isn't secret):
+ *   - SSID seen     -> all good. Stay OFF Bluetooth (phone app keeps working) and idle,
+ *                      re-checking every WIFI_OK_INTERVAL_MS (15 min).
+ *   - SSID NOT seen -> router likely unpowered (AC output off / dead-latch). Switch on
+ *                      Bluetooth, check the unit, re-arm if grid is present.
+ *   - WIFI_SSID empty -> optimization off; always check over BLE every CHECK_INTERVAL_MS (5 min).
  * WiFi and BLE are used sequentially (never both radios at once) to avoid coexistence issues.
- * Leave WIFI_SSID empty to disable the optimization and just poll over BLE continuously.
  *
  * Power this board from a GRID wall outlet (USB), NOT from the AC200L, and place it within
  * Bluetooth (and WiFi) range of the unit.
@@ -43,24 +49,32 @@
 #include <Adafruit_SSD1306.h>
 
 // ---- Config ----------------------------------------------------------------
-// WiFi credentials live in an untracked src/secrets.h so no password is ever committed.
-// Copy src/secrets.h.example -> src/secrets.h and fill it in (secrets.h is gitignored).
-// With no secrets.h, WIFI_SSID defaults to "" -> the WiFi optimization is disabled and the
-// firmware just polls over BLE continuously (still fully functional).
+// Device-specific config lives in an untracked src/config.h so nothing personal is committed.
+// Copy src/config.h.example -> src/config.h and fill it in (config.h is gitignored).
+//
+//   TARGET_DEVICE_ID  REQUIRED. Exact Bluetti device ID as shown in the BLUETTI app (== the
+//                     BLE advertised name, e.g. "AC200L2439001209551"). The firmware connects
+//                     to and re-arms ONLY this unit. Left empty => re-arm disabled entirely
+//                     (safe no-op). This is a security guard: never flip on a neighbour's unit
+//                     or a second battery you didn't mean to.
+//   WIFI_SSID         OPTIONAL. Home WiFi network NAME only (no password — the firmware just
+//                     listens for the router's beacon to tell if it's powered). When set and
+//                     the SSID is seen on the air => router up => skip re-arm, check every
+//                     15 min. Empty => always check over BLE (every 5 min).
 #if defined(__has_include)
-#  if __has_include("secrets.h")
-#    include "secrets.h"
+#  if __has_include("config.h")
+#    include "config.h"
 #  endif
+#endif
+#ifndef TARGET_DEVICE_ID
+#  define TARGET_DEVICE_ID ""
 #endif
 #ifndef WIFI_SSID
 #  define WIFI_SSID ""
-#  define WIFI_PASS ""
 #endif
 
-static const char*    DEVICE_NAME_PREFIX = "AC200L";
-static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;   // how long to wait for the AP
-static const uint32_t WIFI_OK_INTERVAL_MS = 5UL * 60 * 1000; // idle when WiFi is up (5 min)
-static const uint32_t BLE_RETRY_INTERVAL_MS = 45000;     // re-check cadence when WiFi is down
+static const uint32_t WIFI_OK_INTERVAL_MS = 15UL * 60 * 1000; // SSID seen -> idle 15 min
+static const uint32_t CHECK_INTERVAL_MS   = 5UL * 60 * 1000;  // normal BLE check cadence (5 min)
 static const uint32_t SCAN_SECONDS    = 6;
 static const uint32_t RESP_TIMEOUT_MS = 5000;
 
@@ -238,7 +252,8 @@ static bool findChars() {
 }
 
 static bool connectToUnit() {
-  Serial.printf("Scanning %us for '%s*'...\n", SCAN_SECONDS, DEVICE_NAME_PREFIX);
+  // Security: connect ONLY to the exact configured device ID, never a prefix/any-AC200L.
+  Serial.printf("Scanning %us for '%s'...\n", SCAN_SECONDS, TARGET_DEVICE_ID);
   oledStatus("Scanning...");
   NimBLEScan* scan = NimBLEDevice::getScan();
   scan->setActiveScan(true);
@@ -246,7 +261,7 @@ static bool connectToUnit() {
 
   for (int i = 0; i < found.getCount(); i++) {
     NimBLEAdvertisedDevice d = found.getDevice(i);   // returned by value in NimBLE 1.4
-    if (d.getName().rfind(DEVICE_NAME_PREFIX, 0) != 0) continue;
+    if (d.getName() != TARGET_DEVICE_ID) continue;   // exact match only
     Serial.printf("Found %s [%s]; connecting...\n", d.getName().c_str(),
                   d.getAddress().toString().c_str());
     g_client = NimBLEDevice::createClient();
@@ -262,7 +277,7 @@ static bool connectToUnit() {
     return true;
   }
   scan->clearResults();
-  Serial.println("  AC200L not found (on? in range? phone app closed?)");
+  Serial.println("  target device not found (on? in range? correct ID? phone app closed?)");
   oledStatus("Unit not found");
   return false;
 }
@@ -328,23 +343,24 @@ static void bleCheckAndRearm() {
   if (g_client && g_client->isConnected()) g_client->disconnect();
 }
 
-// ---- WiFi probe ------------------------------------------------------------
-// Returns true if we can associate with the configured AP (= router powered = AC output on).
-// Returns false if WiFi is disabled (no SSID) so the caller falls back to BLE polling.
-static bool wifiPowerSeemsOn() {
-  if (strlen(WIFI_SSID) == 0) return false;     // optimization disabled -> always check BLE
+// ---- WiFi beacon probe -----------------------------------------------------
+// Passwordless: scan the air and report whether the configured SSID's beacon is present.
+// The router is powered by the AC200L, so "SSID on the air" => router booted => AC output on.
+// No association, no password — only the (non-secret) SSID name is used. Returns false when
+// the optimization is disabled (no SSID), so the caller always falls through to the BLE check.
+static bool ssidBeaconPresent() {
+  if (strlen(WIFI_SSID) == 0) return false;
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  uint32_t start = millis();
-  bool ok = false;
-  while (millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-    if (WiFi.status() == WL_CONNECTED) { ok = true; break; }
-    delay(250);
+  WiFi.disconnect(false, true);                 // ensure we only listen, never associate
+  int n = WiFi.scanNetworks(false, false);      // blocking scan, hidden APs excluded
+  bool found = false;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == WIFI_SSID) { found = true; break; }
   }
-  WiFi.disconnect(true, true);
+  WiFi.scanDelete();
   WiFi.mode(WIFI_OFF);
   delay(100);
-  return ok;
+  return found;
 }
 
 // ---- Arduino entry points --------------------------------------------------
@@ -352,28 +368,43 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("\nAC200L auto-restart controller (ESP32)");
+  if (strlen(TARGET_DEVICE_ID) == 0)
+    Serial.println("No TARGET_DEVICE_ID set -> re-arm DISABLED (safe no-op).");
+  else
+    Serial.printf("Target device: %s\n", TARGET_DEVICE_ID);
   if (strlen(WIFI_SSID) == 0)
-    Serial.println("WiFi optimization disabled (no SSID set); polling over BLE.");
+    Serial.println("No WIFI_SSID set -> always check over BLE (every 5 min).");
+  else
+    Serial.printf("WiFi beacon optimization on for SSID '%s' (idle 15 min when seen).\n", WIFI_SSID);
   oledInit();
   g_respSem = xSemaphoreCreateBinary();
 }
 
 void loop() {
-  if (wifiPowerSeemsOn()) {
-    Serial.println("WiFi reachable -> router powered / AC output on. Idle (BLE off).");
+  // Security guard: with no target device configured we never touch any unit.
+  if (strlen(TARGET_DEVICE_ID) == 0) {
+    Serial.println("No target device ID configured; not re-arming.");
+    oledStatus("No device ID set");
+    delay(CHECK_INTERVAL_MS);
+    return;
+  }
+
+  // WiFi beacon shortcut: SSID on the air => router up => everything fine, skip the re-arm.
+  if (ssidBeaconPresent()) {
+    Serial.println("SSID present -> router powered / AC output on. Idle 15 min (no re-arm).");
     oledStatus("WiFi OK - router up");
     delay(WIFI_OK_INTERVAL_MS);
     return;
   }
 
-  // WiFi unreachable (or disabled): bring up BLE, check the AC200L, re-arm if needed.
-  Serial.println("WiFi not reachable -> checking AC200L over Bluetooth.");
+  // SSID not seen (or WiFi disabled): bring up BLE, check the unit, re-arm if needed.
+  Serial.println("SSID not seen -> checking the AC200L over Bluetooth.");
   oledStatus("Checking BLE...");
   NimBLEDevice::init("");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   bleCheckAndRearm();
-  NimBLEDevice::deinit(true);            // free the radio so the next WiFi probe is clean
+  NimBLEDevice::deinit(true);            // free the radio so the next WiFi scan is clean
   g_client = nullptr; g_writeChar = nullptr; g_notifyChar = nullptr;
 
-  delay(BLE_RETRY_INTERVAL_MS);
+  delay(CHECK_INTERVAL_MS);
 }

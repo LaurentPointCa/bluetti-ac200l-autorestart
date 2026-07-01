@@ -112,11 +112,21 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
    Adafruit SSD1306+GFX to platformio.ini. COMPILE VERIFIED (esp32dev): [SUCCESS], flash 48.4%,
    RAM 11.1%. pio CLI reinstalled to esp32/.venv-pio (prior penv was gone). README updated.
 9. Optional later: WiFi push alerts (ntfy/Pushover) after network returns.
-10. [2026-07-01] Secrets hygiene for public GitHub: WiFi creds moved to untracked
-    esp32/src/secrets.h (gitignored) via __has_include; committed secrets.h.example template.
-    Repo scanned — no secrets currently tracked. Ready to publish. Still TODO: for deployment
-    create secrets.h with real SSID/PASS, reflash; then commit firmware changes + flip repo to
-    public.
+10. [DONE 2026-07-01] Published to public GitHub + secret/config hygiene. Repo is now PUBLIC:
+    github.com/LaurentPointCa/bluetti-ac200l-autorestart. No secrets in history (WiFi always
+    empty). Config moved to untracked esp32/src/config.h (gitignored) via __has_include, with a
+    committed config.h.example.
+11. [DONE + VERIFIED ON HARDWARE 2026-07-01] Reworked WiFi + targeting per Laurent:
+    - NO WiFi PASSWORD anywhere. Dropped WPA association; WiFi optimization now a passwordless
+      BEACON SCAN (WiFi.scanNetworks, match SSID name only). Rationale: on WPA2-PSK the key is
+      always recoverable from flash, so the win is to not need it — SSID beacon presence is the
+      same "router powered?" signal. True anti-theft would need eFuse flash encryption (not done).
+    - TARGET_DEVICE_ID now MANDATORY + exact-match (was "AC200L" prefix, any unit). Security:
+      only ever re-arms the one configured unit; empty => re-arm disabled (safe no-op, OLED
+      "No device ID set"). Laurent's unit = AC200L2439001209551.
+    - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
+    - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
+      first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
 3. If solid: buy Pi Zero 2 W, port the script, power from wall, deploy near the unit, automate
    the re-arm + (deferred) alerting.
 4. Keep the button pusher as the fallback if BLE proves flaky in practice.

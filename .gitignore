@@ -13,9 +13,9 @@ __pycache__/
 .vscode/
 .DS_Store
 
-# Secrets — real WiFi credentials (keep secrets.h.example, ignore the filled-in copy)
-secrets.h
-esp32/src/secrets.h
+# Device config — keep config.h.example, ignore the filled-in copy (device ID / SSID)
+config.h
+esp32/src/config.h
 
 # Claude Code local settings
 .claude/
