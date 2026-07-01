@@ -127,6 +127,13 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+15. [DONE + VERIFIED ON HARDWARE 2026-07-01] Healthy-state BLE heartbeat. Even when SSID is seen
+    (router up, nothing to re-arm), do one BLE read every WIFI_HEARTBEAT_MS (15 min) + once at
+    boot, to prove the link and refresh SoC/AC-in/AC-out on the OLED. Read-only (grid up => no
+    re-arm). ~7s slot use per 15 min, so phone app effectively keeps BLE. Verified with temp
+    30s/15s intervals: heartbeats recur on schedule interleaved with idle cycles, telemetry
+    refreshes, no hang; boot heartbeat confirmed on production 15-min build (SoC 100%/185W).
+
 14. [DONE + VERIFIED ON HARDWARE 2026-07-01] Cadence strategy tuned for rapid re-arm. Key insight:
     SSID-present == AC-output-ON even mid-outage (battery powers the router until drain), so BLE is
     only ever needed when SSID is absent = network already down = app user unaffected. Three speeds
