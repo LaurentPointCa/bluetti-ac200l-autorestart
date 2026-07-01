@@ -118,9 +118,11 @@ router booted, which means AC output is on and everything is fine — this even 
 outage, because the battery keeps the router (and the SSID) up until it drains. The firmware
 simply **scans for the SSID beacon** — it never associates, so there's no password to store or
 leak (the SSID name isn't a secret). When the SSID is seen, the firmware stays **completely off
-Bluetooth** and idles, re-checking every **2 min**. When the SSID is *not* seen (battery drained,
-or router unpowered by the post-outage dead-latch), the network is down anyway, so it polls BLE
-**hard — every 45 s** — for a rapid re-arm the moment grid returns.
+Bluetooth** and idles, re-checking every **2 min**. Once every **15 min** it still does a single
+BLE read even while healthy — a **heartbeat** that proves the link works and refreshes the live
+SoC / power on the panel (it only reads; grid is up so it won't re-arm). When the SSID is *not*
+seen (battery drained, or router unpowered by the post-outage dead-latch), the network is down
+anyway, so it polls BLE **hard — every 45 s** — for a rapid re-arm the moment grid returns.
 
 Two benefits:
 1. During normal operation the ESP32 isn't holding the unit's Bluetooth slot, so **your phone
@@ -142,6 +144,7 @@ doesn't keep stealing the single BLE slot from someone using the phone app.
 ## Tuning (top of `src/main.cpp`)
 
 - `WIFI_OK_INTERVAL_MS` — idle time when the SSID is seen (default 2 min).
+- `WIFI_HEARTBEAT_MS` — how often to do a healthy-state BLE read for proof/telemetry (default 15 min).
 - `CHECK_INTERVAL_MS` — fast BLE re-arm poll when the SSID is configured but absent (default 45 s).
 - `NO_WIFI_INTERVAL_MS` — gentle BLE poll when no SSID is configured at all (default 2 min).
 - `TARGET_DEVICE_ID` / `WIFI_SSID` — set these in `src/config.h`, not here.

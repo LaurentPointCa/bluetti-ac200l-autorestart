@@ -19,7 +19,9 @@
  * is on and everything is fine. The firmware just SCANS for the configured WIFI_SSID beacon —
  * it never associates, so NO WiFi password is needed or stored (the SSID name isn't secret):
  *   - SSID seen     -> all good. Stay OFF Bluetooth (phone app keeps working) and idle,
- *                      re-checking every WIFI_OK_INTERVAL_MS (2 min).
+ *                      re-checking every WIFI_OK_INTERVAL_MS (2 min). Once every WIFI_HEARTBEAT_MS
+ *                      (15 min) do a single BLE read anyway, to prove the link and refresh the
+ *                      SoC/power shown on the panel (it reads only; grid is up so it won't re-arm).
  *   - SSID NOT seen -> router likely unpowered (AC output off / dead-latch), and the network
  *                      is down anyway, so poll BLE hard every CHECK_INTERVAL_MS (45 s) for a
  *                      rapid re-arm once grid returns.
@@ -91,6 +93,9 @@
 static const uint32_t WIFI_OK_INTERVAL_MS = 2UL * 60 * 1000;  // SSID seen -> idle 2 min (no BLE)
 static const uint32_t CHECK_INTERVAL_MS   = 45UL * 1000;      // SSID configured but absent -> 45s
 static const uint32_t NO_WIFI_INTERVAL_MS = 2UL * 60 * 1000;  // no SSID configured -> gentle 2 min
+// Even when healthy (SSID seen), do ONE BLE read this often to prove the link and refresh the
+// SoC/power readings on the panel. Rare enough to barely touch the phone app's BLE slot.
+static const uint32_t WIFI_HEARTBEAT_MS   = 15UL * 60 * 1000; // healthy BLE heartbeat -> 15 min
 static const uint32_t SCAN_SECONDS    = 6;
 static const uint32_t RESP_TIMEOUT_MS = 5000;
 
@@ -129,6 +134,7 @@ static char     g_dStatus[22] = "Booting";
 static bool     g_triggered     = false;
 static int8_t   g_wifiSeen      = -1;   // -1 = WiFi disabled, 0 = SSID not seen, 1 = SSID seen
 static uint32_t g_nextCheckSecs = 0;    // seconds until the next check, for the OLED countdown
+static uint32_t g_lastHeartbeat = 0;    // millis() of the last healthy-state BLE read (0 = never)
 
 #if OLED_ENABLED
 static Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, -1);
@@ -473,10 +479,21 @@ void loop() {
     return;
   }
 
-  // WiFi beacon shortcut: SSID on the air => router up => everything fine, skip the re-arm.
+  // WiFi beacon shortcut: SSID on the air => router up => AC output on => nothing to re-arm.
   if (ssidBeaconPresent()) {
-    Serial.println("SSID present -> router powered / AC output on. Idle 2 min (no re-arm).");
-    oledStatus("WiFi OK - router up");
+    uint32_t now = millis();
+    // Periodic heartbeat: even while healthy, do one BLE read every WIFI_HEARTBEAT_MS (and once
+    // right after boot) to prove the link still works and refresh SoC/power on the panel. Grid is
+    // up and output is on, so bleCheckAndRearm just reads telemetry — it won't actually re-arm.
+    if (g_lastHeartbeat == 0 || (now - g_lastHeartbeat) >= WIFI_HEARTBEAT_MS) {
+      Serial.println("SSID present -> healthy; BLE heartbeat (read + display).");
+      oledStatus("WiFi OK - heartbeat");
+      bleCheckAndRearm();
+      g_lastHeartbeat = millis();
+    } else {
+      Serial.println("SSID present -> router powered / AC output on. Idle 2 min (no re-arm).");
+      oledStatus("WiFi OK - router up");
+    }
     sleepWithCountdown(WIFI_OK_INTERVAL_MS);
     return;
   }
