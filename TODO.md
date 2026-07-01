@@ -127,6 +127,15 @@ WiFi/cloud AND ESP32-proxy. Leaves: direct-BLE Pi, or a physical button pusher.
     - Cadence: SSID seen -> idle 15 min; else BLE check every 5 min (was 45s).
     - Verified on hardware: boots, "Target device: AC200L...", exact-match scan found + connected
       first try, read SoC 100%/AC-in 125W(grid)/AC-out 125W(on), OLED "OK - armed".
+14. [DONE + VERIFIED ON HARDWARE 2026-07-01] Cadence strategy tuned for rapid re-arm. Key insight:
+    SSID-present == AC-output-ON even mid-outage (battery powers the router until drain), so BLE is
+    only ever needed when SSID is absent = network already down = app user unaffected. Three speeds
+    (Laurent's picks): SSID seen -> idle 2 min (no BLE); SSID configured but absent -> BLE poll 45s
+    (rapid re-arm, ~1 min worst case); no SSID configured -> gentle 2 min (don't hog BLE slot from
+    app users). New NO_WIFI_INTERVAL_MS constant. Also added blank-1s screen refresh at each check.
+    Local build flashed with WIFI_SSID="Internet" (config.h, gitignored). Verified stable across
+    repeated 2-min idle cycles.
+
 13. [DONE + VERIFIED ON HARDWARE 2026-07-01] FIXED a real hang (not cosmetic): board did ONE
     BLE check then wedged forever ("stuck at checking", countdown never started, serial silent
     with no crash trace). Root cause: NimBLEDevice::deinit(true) every loop deadlocks the NimBLE
